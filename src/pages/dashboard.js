@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useRouter } from 'next/router';
 import { db } from '../lib/firebase';
-import { collection, query, where, orderBy, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs } from 'firebase/firestore';
 import { Line } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -21,43 +21,29 @@ export default function Dashboard() {
   const { user, loading, logout } = useAuth();
   const router = useRouter();
   const [stepData, setStepData] = useState([]);
-  const [rawData, setRawData] = useState([]); // For debugging
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [debugInfo, setDebugInfo] = useState('');
 
-  useEffect(() => {
-    if (loading) return;
-    if (!user) {
-      router.push('/login');
-      return;
-    }
-
-    fetchData();
-  }, [user, loading, router]);
-
-  const fetchData = async () => {
+  // Define fetchData using useCallback to memoize and avoid re-creation
+  const fetchData = useCallback(async () => {
     if (!user) return;
-    
+
     setIsLoading(true);
     setError('');
     setDebugInfo('');
-    
+
     try {
-      console.log('Fetching data for user:', user.uid);
-      
-      // First, try to get ALL data without filters to see what's there
-      const stepsQuery = query(
-        collection(db, 'steps'),
-        where('userId', '==', user.uid)
-      );
-      
+      console.log('Fetching data for user:', user.email);
+
+      // Query with where clause for userId
+      const stepsQuery = query(collection(db, 'steps'), where('userId', '==', user.uid));
       const snapshot = await getDocs(stepsQuery);
-      
+
       console.log('Total documents found:', snapshot.size);
-      
+
       if (snapshot.empty) {
-        setDebugInfo(`No documents found for user ${user.uid}. Check if:
+        setDebugInfo(`No documents found for user ${user.email}. Check if:
 1. Data exists in Firestore
 2. The 'userId' field matches exactly
 3. Collection name is 'steps'`);
@@ -66,22 +52,13 @@ export default function Dashboard() {
         return;
       }
 
-      // Log all raw data for debugging
-      const allRawData = [];
-      snapshot.docs.forEach(doc => {
-        const data = doc.data();
-        console.log('Raw document:', doc.id, data);
-        allRawData.push({ id: doc.id, ...data });
-      });
-      setRawData(allRawData);
-
       // Process the data
       const data = snapshot.docs.map(doc => {
         const docData = doc.data();
         let timestamp;
-        
+
         console.log('Processing doc:', doc.id, 'timestamp type:', typeof docData.timestamp, 'value:', docData.timestamp);
-        
+
         // Handle different timestamp formats
         if (docData.timestamp?.toDate) {
           // Firestore Timestamp object
@@ -114,12 +91,12 @@ export default function Dashboard() {
 
       // Sort by timestamp
       data.sort((a, b) => a.timestamp - b.timestamp);
-      
+
       console.log('Processed data:', data);
       setStepData(data);
-      
+
       setDebugInfo(`Successfully loaded ${data.length} records. Latest timestamp: ${data[data.length - 1]?.timestamp.toLocaleString()}`);
-      
+
     } catch (err) {
       console.error('Error fetching data:', err);
       setError('Error fetching data: ' + err.message);
@@ -127,7 +104,22 @@ export default function Dashboard() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [user]); // Dependency on user ensures fetchData updates when user changes
+
+  useEffect(() => {
+    if (loading) return;
+    if (!user) {
+      router.push('/login');
+      return;
+    }
+    // Check for online status
+    if (!navigator.onLine) {
+      setError('No internet connection. Please check your network.');
+      setIsLoading(false);
+      return;
+    }
+    fetchData();
+  }, [user, loading, router]); // Removed fetchData from deps, handled by useCallback
 
   const chartData = {
     labels: stepData.map(item => {
@@ -164,7 +156,7 @@ export default function Dashboard() {
         <div className="flex justify-between items-center mb-6">
           <div>
             <h2 className="text-3xl font-bold text-blue-600">Your Step Data</h2>
-            <p className="text-sm text-gray-600 mt-1">User ID: {user?.uid}</p>
+            <p className="text-sm text-gray-600 mt-1">User Email: {user?.email}</p> {/* Replaced User ID with User Email */}
           </div>
           <button
             onClick={logout}
@@ -228,37 +220,6 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Raw Data Table for Debugging */}
-            <details className="mb-4">
-              <summary className="cursor-pointer text-blue-600 hover:text-blue-800 font-semibold">
-                Show Raw Data (for debugging)
-              </summary>
-              <div className="mt-4 overflow-x-auto">
-                <table className="min-w-full text-sm">
-                  <thead className="bg-gray-100">
-                    <tr>
-                      <th className="px-4 py-2 text-left">Document ID</th>
-                      <th className="px-4 py-2 text-left">Steps</th>
-                      <th className="px-4 py-2 text-left">Timestamp</th>
-                      <th className="px-4 py-2 text-left">Original Timestamp</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {stepData.map((item, idx) => (
-                      <tr key={idx} className="border-t">
-                        <td className="px-4 py-2">{item.id}</td>
-                        <td className="px-4 py-2">{item.steps}</td>
-                        <td className="px-4 py-2">{item.timestamp.toLocaleString()}</td>
-                        <td className="px-4 py-2 text-xs">
-                          <code>{JSON.stringify(item.originalTimestamp)}</code>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </details>
-
             {/* Recent Activity */}
             <div className="bg-gray-50 p-4 rounded-lg">
               <h3 className="font-bold text-gray-800 mb-3">Recent Activity</h3>
@@ -277,22 +238,6 @@ export default function Dashboard() {
             </div>
           </>
         )}
-
-        {/* Console Log Button */}
-        <div className="mt-4 text-center">
-          <button
-            onClick={() => {
-              console.log('=== FULL DEBUG INFO ===');
-              console.log('User:', user);
-              console.log('Raw Data:', rawData);
-              console.log('Processed Data:', stepData);
-              alert('Check browser console (F12) for full debug info');
-            }}
-            className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600 text-sm"
-          >
-            Log Debug Info to Console
-          </button>
-        </div>
       </div>
     </div>
   );
